@@ -26,6 +26,7 @@ use ffi::{lua_State, lua_Debug};
 use libc::{c_int, c_void, c_char, size_t};
 use std::{mem, ptr, str, slice, any};
 use std::ffi::{CString, CStr};
+use std::sync::Weak;
 use super::convert::{ToLua, FromLua};
 
 use ::{
@@ -479,6 +480,8 @@ impl State {
     unsafe {
       let mut state = State::from_ptr(ffi::lua_newthread(self.L));
       state.reset_extra();
+      // clone extra weak reference
+      state.set_extra(self.get_extra());
       state
     }
   }
@@ -1039,37 +1042,23 @@ impl State {
 
   #[inline]
   unsafe fn reset_extra(&mut self) {
-    let space_ptr = ffi::lua_getextraspace(self.L) as *mut *mut Extra;
-    *space_ptr = ptr::null_mut();
+    let extra_ptr = ffi::lua_getextraspace(self.L) as *mut Weak<Extra>;
+    ptr::write(extra_ptr, Weak::new());
   }
 
   /// Set extra data. Return previous value if it was set.
-  pub fn set_extra(&mut self, extra: Option<Extra>) -> Option<Extra> {
+  pub fn set_extra(&mut self, extra: Weak<Extra>) -> Weak<Extra> {
     unsafe {
-      let space_ptr = ffi::lua_getextraspace(self.L) as *mut *mut Extra;
-      let new_value = match extra {
-        Some(extra) => Box::into_raw(Box::new(extra)),
-        None => ptr::null_mut(),
-      };
-      let old_value = ptr::replace(space_ptr, new_value);
-      if old_value.is_null() {
-        None
-      } else {
-        Some(*Box::from_raw(old_value))
-      }
+      let extra_ptr = ffi::lua_getextraspace(self.L) as *mut Weak<Extra>;
+      ptr::replace(extra_ptr, extra)
     }
   }
 
   /// Get the currently set extra data, if any.
-  pub fn get_extra(&mut self) -> Option<&mut (any::Any + 'static + Send)> {
+  pub fn get_extra(&mut self) -> Weak<Extra> {
     unsafe {
-      let space_ptr = ffi::lua_getextraspace(self.L) as *mut *mut Extra;
-      let box_ptr = *space_ptr;
-      if box_ptr.is_null() {
-        None
-      } else {
-        Some(&mut **box_ptr)
-      }
+      let extra_ptr = ffi::lua_getextraspace(self.L) as *const Weak<Extra>;
+      (*extra_ptr).clone()
     }
   }
 
@@ -1624,7 +1613,6 @@ impl State {
 impl Drop for State {
   fn drop(&mut self) {
     if self.owned {
-      let _ = self.set_extra(None);
       unsafe { ffi::lua_close(self.L) }
     }
   }
